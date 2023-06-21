@@ -1,0 +1,11 @@
+﻿<Window x:Class="Wallpaper_Engine.AfterWallpaperWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:Wallpaper_Engine"
+        mc:Ignorable="d"
+        Loaded="AfterWallpaperWindow_Loaded" WindowStyle="None" WindowState="Minimized">
+
+    <MediaElement x:Name="AfterMediaElement" LoadedBehavior="Manual" UnloadedBehavior="Stop" MediaEnded="AfterMediaElement_MediaEnded" />
+</Window>
