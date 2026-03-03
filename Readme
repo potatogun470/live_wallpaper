@@ -136,17 +136,50 @@ sudo ip netns exec ue2 iperf3 -c 192.168.70.135 -u -b 100M -R
 ```
 
 ---
+#### gNBサーバ側（例: MU-MIMO Pattern 11）
 
-### 設定チェックリスト
+```bash
+cd /home/nec/project/OAI/vodun-oai_00.02.00/cmake_targets/ran_build/build
 
-| 項目 | 確認コマンド（UEホスト側） | 期待値 |
-|---|---|---|
-| namespaceの存在 | `ip netns list` | ue1, ue2 が表示 |
-| ip_forward | `sysctl net.ipv4.ip_forward` | `= 1` |
-| FORWARDルール | `iptables -L FORWARD -n` | v-eth1/2 ↔ enp134s0 の ACCEPT |
-| MASQUERADEなし | `iptables -t nat -L POSTROUTING -n` | 192.168.20x.0/24 の MASQUERADE なし |
-| nsデフォルトルート | `ip netns exec ue1 ip route` | `default via 192.168.201.100` |
-| gNBサーバルート | （gNBで）`ip route show` | `192.168.201.0/24 via 192.168.1.28` |
-| gNBへの疎通 | `ip netns exec ue1 ping -c2 192.168.1.27` | 0% loss |
-| oaitun生成 | `ip netns exec ue1 ip addr show oaitun_ue1` | `10.0.0.x` が表示 |
-| UPF疎通 | `ip netns exec ue1 ping -c2 192.168.70.135` | 0% loss |
+sudo ./nr-softmodem \
+  -O ../../../CONF/test_patterns/pattern_11_2-4-5_DA_Overlap_S_Based.conf \
+  --rfsim --rfsimulator.serveraddr server
+```
+
+`--rfsimulator.serveraddr server` はgNBがサーバモードで全IFをlisten（UEからの接続を待つ）。
+
+#### UEサーバ側
+
+各UEを別々のnamespaceで起動する。IMSI・telnetsrvポートをUEごとに変える。
+
+```bash
+# UE1（netns ue1）
+sudo ip netns exec ue1 \
+  env UE_TEST_RSRP_CONF="/home/nec/project/OAI/vodun-oai_00.02.00/CONF/test_patterns/ue_test_rsrp_pattern1.conf" \
+  /home/nec/project/OAI/vodun-oai_00.02.00/cmake_targets/ran_build/build/nr-uesoftmodem \
+  -O /home/nec/project/OAI/vodun-oai_00.02.00/CONF/test_patterns/nr-ue.mimo.conf \
+  -r 66 --numerology 3 --band 257 -C 27550560000 --ssb 276 \
+  --rfsim --rfsimulator.serveraddr 192.168.1.27 \
+  --uicc0.imsi 001010000000001 \
+  --telnetsrv --telnetsrv.listenport 9091
+
+# UE2（netns ue2）
+sudo ip netns exec ue2 \
+  env UE_TEST_RSRP_CONF="/home/nec/project/OAI/vodun-oai_00.02.00/CONF/test_patterns/ue_test_rsrp_pattern1.conf" \
+  /home/nec/project/OAI/vodun-oai_00.02.00/cmake_targets/ran_build/build/nr-uesoftmodem \
+  -O /home/nec/project/OAI/vodun-oai_00.02.00/CONF/test_patterns/nr-ue.mimo.conf \
+  -r 66 --numerology 3 --band 257 -C 27550560000 --ssb 276 \
+  --rfsim --rfsimulator.serveraddr 192.168.1.27 \
+  --uicc0.imsi 001010000000002 \
+  --telnetsrv --telnetsrv.listenport 9092
+
+# UE3（netns ue3）
+sudo ip netns exec ue3 \
+  env UE_TEST_RSRP_CONF="/home/nec/project/OAI/vodun-oai_00.02.00/CONF/test_patterns/ue_test_rsrp_pattern1.conf" \
+  /home/nec/project/OAI/vodun-oai_00.02.00/cmake_targets/ran_build/build/nr-uesoftmodem \
+  -O /home/nec/project/OAI/vodun-oai_00.02.00/CONF/test_patterns/nr-ue.mimo.conf \
+  -r 66 --numerology 3 --band 257 -C 27550560000 --ssb 276 \
+  --rfsim --rfsimulator.serveraddr 192.168.1.27 \
+  --uicc0.imsi 001010000000003 \
+  --telnetsrv --telnetsrv.listenport 9093
+```
