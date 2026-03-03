@@ -1,0 +1,152 @@
+
+---
+
+## Split構成（gNBとUEが別サーバ）のネットワーク設定
+
+### 構成概要
+
+```
+【UEホスト (192.168.1.28)】                        【gNBサーバ (192.168.1.27)】
+
+ netns ue1                                          nr-softmodem (rfsim server)
+   v-ue1: 192.168.201.1
+   oaitun_ue1: 10.0.0.2 ← UE登録後に生成            route table:
+   default via 192.168.201.100                        192.168.201.0/24 via 192.168.1.28
+                                                      192.168.202.0/24 via 192.168.1.28
+ netns ue2
+   v-ue2: 192.168.202.2                           【CN5G (Dockerネットワーク)】
+   oaitun_ue1: 10.0.0.3 ← UE登録後に生成
+   default via 192.168.202.100                      UPF: 192.168.70.135
+
+ ホスト:
+   v-eth1: 192.168.201.100
+   v-eth2: 192.168.202.100
+   enp134s0: 192.168.1.28
+   ip_forward=1
+   FORWARD: v-eth1 ↔ enp134s0
+   FORWARD: v-eth2 ↔ enp134s0
+   MASQUERADEなし（NATなしでソースIPをそのままgNBに届ける）
+```
+
+---
+
+### 設定手順
+
+#### 1. namespace作成（UEホスト側）
+
+```bash
+cd /home/nec/project/OAI/vodun-oai_00.02.00/vendors/ntt/scripts
+sudo ./multi-ue.sh -c 1
+sudo ./multi-ue.sh -c 2
+# 3UE試験の場合
+sudo ./multi-ue.sh -c 3
+
+# 確認
+ip netns list    # ue1 / ue2 / ue3 が表示されること
+```
+
+#### 2. ホスト側ネットワーク設定（UEホスト側）
+
+```bash
+# IPフォワーディング有効化
+sudo sysctl -qw net.ipv4.ip_forward=1
+
+# FORWARDルール（MASQUERADEなし）
+sudo iptables -A FORWARD -i v-eth1 -o enp134s0 -j ACCEPT
+sudo iptables -A FORWARD -i enp134s0 -o v-eth1 -j ACCEPT
+sudo iptables -A FORWARD -i v-eth2 -o enp134s0 -j ACCEPT
+sudo iptables -A FORWARD -i enp134s0 -o v-eth2 -j ACCEPT
+# 3UE試験の場合は v-eth3 も追加
+# sudo iptables -A FORWARD -i v-eth3 -o enp134s0 -j ACCEPT
+# sudo iptables -A FORWARD -i enp134s0 -o v-eth3 -j ACCEPT
+
+# namespaceのデフォルトルート（replace で二重追加防止）
+sudo ip netns exec ue1 ip route replace default via 192.168.201.100
+sudo ip netns exec ue2 ip route replace default via 192.168.202.100
+# 3UE試験の場合
+# sudo ip netns exec ue3 ip route replace default via 192.168.203.100
+
+# gNBへの疎通確認
+sudo ip netns exec ue1 ping -c 2 192.168.1.27
+sudo ip netns exec ue2 ping -c 2 192.168.1.27
+```
+
+#### 3. gNBサーバ側ルート追加（gNBサーバ上で実行）
+
+```bash
+sudo ip route add 192.168.201.0/24 via 192.168.1.28
+sudo ip route add 192.168.202.0/24 via 192.168.1.28
+# 3UE試験の場合
+# sudo ip route add 192.168.203.0/24 via 192.168.1.28
+```
+
+> **注意**: `ip route add` はreboot後に消える。永続化する場合はnetplanや
+> `/etc/network/interfaces` の `post-up` に記載すること。
+
+---
+
+### UE起動・登録後の追加設定
+
+UEが登録・PDUセッション確立すると namespace内に `oaitun_ue1` が生成される。
+CN5G（UPF: 192.168.70.135）への経路を追加する。
+
+```bash
+# oaitun生成確認
+sudo ip netns exec ue1 ip addr show oaitun_ue1
+sudo ip netns exec ue2 ip addr show oaitun_ue1
+
+# CN5Gへのルート追加
+sudo ip netns exec ue1 ip route add 192.168.70.0/24 dev oaitun_ue1
+sudo ip netns exec ue2 ip route add 192.168.70.0/24 dev oaitun_ue1
+
+# 疎通確認
+sudo ip netns exec ue1 ping -c 2 192.168.70.135
+sudo ip netns exec ue2 ping -c 2 192.168.70.135
+```
+
+---
+
+### iperf3実行方法
+
+```bash
+# NG: ホスト側でbind-dev指定（oaitunを通らないため192.168.70.135に届かない）
+# iperf3 --bind-dev v-eth1 -c 192.168.70.135 ...  ← 誤り
+
+# OK: namespace内から実行（oaitun_ue1のGTPトンネル経由でUPFに届く）
+sudo ip netns exec ue1 iperf3 -c 192.168.70.135 -u -b 100M -R
+sudo ip netns exec ue2 iperf3 -c 192.168.70.135 -u -b 100M -R
+```
+
+---
+
+### パケット経路
+
+```
+【rfsimulator（UE↔gNB間の無線シミュレーション）】
+  ue1内 nr-uesoftmodem
+    → v-ue1 (192.168.201.1)
+    → v-eth1 (192.168.201.100) → enp134s0 (192.168.1.28)
+    → gNB (192.168.1.27:4043)  ← ソースIP 192.168.201.1 のまま到達
+    gNBからの戻り: 192.168.201.0/24 via 192.168.1.28 のルートで返送
+
+【iperf3（UE→UPF間のユーザデータ）】
+  ue1内 iperf3
+    → oaitun_ue1 (10.0.0.2) ← GTPトンネル
+    → （gNBを通じて）UPF (192.168.70.135)
+```
+
+---
+
+### 設定チェックリスト
+
+| 項目 | 確認コマンド（UEホスト側） | 期待値 |
+|---|---|---|
+| namespaceの存在 | `ip netns list` | ue1, ue2 が表示 |
+| ip_forward | `sysctl net.ipv4.ip_forward` | `= 1` |
+| FORWARDルール | `iptables -L FORWARD -n` | v-eth1/2 ↔ enp134s0 の ACCEPT |
+| MASQUERADEなし | `iptables -t nat -L POSTROUTING -n` | 192.168.20x.0/24 の MASQUERADE なし |
+| nsデフォルトルート | `ip netns exec ue1 ip route` | `default via 192.168.201.100` |
+| gNBサーバルート | （gNBで）`ip route show` | `192.168.201.0/24 via 192.168.1.28` |
+| gNBへの疎通 | `ip netns exec ue1 ping -c2 192.168.1.27` | 0% loss |
+| oaitun生成 | `ip netns exec ue1 ip addr show oaitun_ue1` | `10.0.0.x` が表示 |
+| UPF疎通 | `ip netns exec ue1 ping -c2 192.168.70.135` | 0% loss |
